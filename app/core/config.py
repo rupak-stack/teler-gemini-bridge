@@ -9,9 +9,8 @@ class Settings(BaseSettings):
     
     # Gemini Configuration
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
-    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-preview-native-audio-dialog")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
     gemini_audio_chunk_count: int = int(os.getenv("GEMINI_AUDIO_CHUNK_COUNT", "20"))
-    min_decimate_bytes: int = int(os.get("MIN_DECIMATE_BYTES"), "28")
     
     # Server Configuration - dynamically get ngrok URL
     @property

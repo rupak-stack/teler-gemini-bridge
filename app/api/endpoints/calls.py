@@ -1,3 +1,4 @@
+from asyncio import selector_events
 from fastapi import responses
 import asyncio
 import base64
@@ -114,10 +115,10 @@ async def handle_media_stream(websocket: WebSocket):
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=False,
-                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
+                    start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_LOW,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
                     prefix_padding_ms=150,
-                    silence_duration_ms=400,
+                    silence_duration_ms=500,
                 )
             ),
         )
@@ -162,10 +163,6 @@ async def handle_media_stream(websocket: WebSocket):
                     try:
                         combined_audio = b"".join(gemini_audio_chunks)
 
-                        # Safety: scipy.decimate needs > padlen samples; skip flush if too small
-                        if len(combined_audio) < settings.min_decimate_bytes:
-                            return
-
                         downsampled_data = audio_resampler.downsample(combined_audio, 24000)
                         downsampled_b64 = base64.b64encode(downsampled_data).decode('utf-8')
 
@@ -185,6 +182,7 @@ async def handle_media_stream(websocket: WebSocket):
                     while True:  # Keep the stream alive indefinitely
                         try:
                             async for response in session.receive():
+                                sc = response.server_content
                                 # Process audio data
                                 if response.data is not None:
                                     gemini_audio_chunks.append(response.data)
@@ -192,37 +190,19 @@ async def handle_media_stream(websocket: WebSocket):
                                     
                                     # Send buffered audio when we have enough chunks
                                     if len(gemini_audio_chunks) >= settings.gemini_audio_chunk_count:
-                                        try:
-                                            # Combine, downsample, and send audio
-                                            combined_audio = b"".join(gemini_audio_chunks)
-                                            downsampled_data = audio_resampler.downsample(combined_audio, 24000)
-                                            downsampled_b64 = base64.b64encode(downsampled_data).decode('utf-8')
-
-                                            await websocket.send_json({
-                                                "type": "audio",
-                                                "audio_b64": downsampled_b64,
-                                                "chunk_id": chunk_id
-                                            })
-                                            logger.debug(f"Sent audio to Teler (chunk {chunk_id})")
-                                            
-                                            # Reset buffer and increment chunk ID
-                                            gemini_audio_chunks = []
-                                            chunk_id += 1
-                                            
-                                        except Exception as e:
-                                            logger.error(f"Error processing audio chunks: {e}")
+                                        # Combine, downsample, and send audio
+                                        await _flush()
                                 
                                 # Handle turn completion - continue waiting for next turn
-                                if response.server_content:
+                                if sc:
                                     # User barged in — clear the buffer
-                                    if getattr(response.server_content, 'interrupted', False):
-                                        logger.debug("Interruption detected — clearing remaining buffer")
+                                    if getattr(sc, 'interrupted', False):
+                                        logger.debug("Interruption detected, clearing gemini and call buffer")
                                         gemini_audio_chunks = []
+                                        await websocket.send_json({"type": "clear"})
                                         
-
-                                    if (getattr(response.server_content, 'turn_complete', False) or
-                                        getattr(response.server_content, 'generation_complete', False)):
-                                        logger.debug("Turn/generation completed - flushing remaining buffer")
+                                    if (getattr(sc, 'generation_complete', False)):
+                                        logger.debug("Generation completed - flushing remaining buffer")
                                         await _flush()
                                     
                         except Exception as session_error:
